@@ -91,7 +91,21 @@ def tg_api(method: str, **params):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         return None
-    r = requests.post(f"https://api.telegram.org/bot{token}/{method}", data=params, timeout=30)
+    r = None
+    for attempt in range(3):
+        try:
+            r = requests.post(f"https://api.telegram.org/bot{token}/{method}", data=params, timeout=30)
+        except requests.RequestException as e:
+            print(f"[telegram] {method} błąd sieci: {e}")
+            time.sleep(5)
+            continue
+        if r.status_code == 429:  # limit zapytań – poczekaj wskazany czas
+            wait = int(r.json().get("parameters", {}).get("retry_after", 5))
+            time.sleep(min(wait, 60) + 1)
+            continue
+        break
+    if r is None:
+        return None
     if not r.ok:
         print(f"[telegram] {method} błąd {r.status_code}: {r.text[:300]}")
         return None
