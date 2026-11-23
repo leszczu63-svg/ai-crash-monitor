@@ -87,8 +87,21 @@ def money(x: float) -> str:
 
 # ───────────────────────── Telegram ─────────────────────────
 
+TG_ERRORS: list[str] = []
+
+
+def tg_token() -> str:
+    """Token z sekretu, oczyszczony z typowych błędów wklejania (spacje, cudzysłowy, prefiks 'bot')."""
+    t = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip().strip('"\'').strip()
+    return t[3:] if t.lower().startswith("bot") else t
+
+
+def tg_chat() -> str:
+    return os.environ.get("TELEGRAM_CHAT_ID", "").strip().strip('"\'').strip()
+
+
 def tg_api(method: str, **params):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    token = tg_token()
     if not token:
         return None
     r = None
@@ -108,15 +121,16 @@ def tg_api(method: str, **params):
         return None
     if not r.ok:
         print(f"[telegram] {method} błąd {r.status_code}: {r.text[:300]}")
+        TG_ERRORS.append(f"{method}: {r.status_code} {r.text[:200]}")
         return None
     return r.json().get("result")
 
 
 def tg_send(text: str) -> bool:
-    chat = os.environ.get("TELEGRAM_CHAT_ID")
+    chat = tg_chat()
     if len(text) > 4000:
         text = text[:3990] + "\n…"
-    if not os.environ.get("TELEGRAM_BOT_TOKEN") or not chat:
+    if not tg_token() or not chat:
         print("──── [Telegram wyłączony – wiadomość] ────\n" + text + "\n──────────────")
         return True
     return tg_api("sendMessage", chat_id=chat, text=text, parse_mode="HTML",
@@ -497,7 +511,7 @@ def add_manual(state, eid, date, note):
 
 def process_commands(cfg: dict, state: dict) -> bool:
     """Obsługuje komendy z Telegrama. Zwraca True, jeśli trzeba przeliczyć zdarzenia."""
-    chat = str(os.environ.get("TELEGRAM_CHAT_ID", ""))
+    chat = tg_chat()
     updates = tg_api("getUpdates", offset=state["tg_offset"], timeout=0) or []
     manual_ids = {e["id"] for e in cfg["events"] if e["type"] == "manual"}
     need_eval = False
@@ -627,17 +641,10 @@ def run_full(cfg: dict, state: dict) -> None:
         record_failure(state, "prices", e)
         return  # bez cen nie da się rzetelnie ocenić – następny udany przebieg nadrobi zaległości
     dash, alerts = evaluate(cfg, state, prices, h100)
-    first_run = not state["initialized"]
     sent = dispatch_alerts(cfg, state, alerts)
+    state["initialized"] = True
     DASH_PATH.parent.mkdir(parents=True, exist_ok=True)
     DASH_PATH.write_text(json.dumps(dash, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    if first_run:
-        eps = dash["combo"]["episodes"]
-        hist = "\n".join(f"• {ep['start']} → {ep['end']}: {ep['max_count']} zdarzeń" for ep in eps[-8:])
-        tg_send("✅ <b>Monitor uruchomiony.</b> Od teraz dostaniesz powiadomienie o każdym nowym zdarzeniu "
-                f"i o alarmie {cfg['min_events']} w {cfg['window_days']} dni.\n\n" + status_text(dash)
-                + (f"\n\nHistoryczne epizody (ostatnie):\n{hist}" if eps else "") + "\n\n/pomoc – lista komend")
-        state["initialized"] = True
     print(f"Ocena zakończona. Wysłano powiadomień: {sent}. W oknie: {dash['combo']['active_count']}/{cfg['min_events']}")
 
 
@@ -651,13 +658,40 @@ def main() -> None:
             print(f"chat_id={chat.get('id')}  ({chat.get('first_name', '')} {chat.get('username', '')})")
         return
     if mode == "test":
-        print("OK" if tg_send("✅ Test: powiadomienia działają.") else "BŁĄD")
-        return
+        tok, chat = tg_token(), tg_chat()
+        print(f"Token: {'ustawiony' if tok else 'BRAK'}, format {'OK' if re.fullmatch(r'[0-9]{6,}:[A-Za-z0-9_-]{30,}', tok) else 'NIEPOPRAWNY (oczekiwano 123456789:ABC...)'}")
+        print(f"Chat ID: {'ustawiony' if chat else 'BRAK'}, format {'OK' if re.fullmatch(r'-?[0-9]{5,}', chat) else 'NIEPOPRAWNY (oczekiwano samej liczby)'}")
+        me = tg_api("getMe")
+        print(f"Bot: @{me['username']}" if me else "Bot: token odrzucony przez Telegram")
+        ups = tg_api("getUpdates", timeout=0) or []
+        chats = {str((u.get("message") or {}).get("chat", {}).get("id")) for u in ups}
+        print(f"Ostatnie wiadomości do bota z {len(chats)} czatów; zgodny z TELEGRAM_CHAT_ID: {'tak' if chat in chats else 'nie / brak wiadomości'}")
+        ok = tg_send("✅ Test: powiadomienia działają.")
+        print("OK" if ok else "BŁĄD")
+        sys.exit(0 if ok else 1)
     need_eval = process_commands(cfg, state)
     run_news(cfg, state)
     if mode == "daily" or need_eval or not state["initialized"]:
         run_full(cfg, state)
+    if not state.get("welcome_sent") and DASH_PATH.exists():
+        send_welcome(cfg, state)
     save_state(state)
+    if TG_ERRORS:
+        print("\n❌ Telegram odrzucił zapytania. 404 = zły format tokenu (sprawdź sekret TELEGRAM_BOT_TOKEN, "
+              "czy nie zamieniono go z TELEGRAM_CHAT_ID), 401 = token unieważniony, "
+              "400 chat not found = zły TELEGRAM_CHAT_ID albo nie napisałeś nic do bota.")
+        sys.exit(1)
+
+
+def send_welcome(cfg: dict, state: dict) -> None:
+    dash = json.loads(DASH_PATH.read_text(encoding="utf-8"))
+    eps = dash["combo"]["episodes"]
+    hist = "\n".join(f"• {ep['start']} → {ep['end']}: {ep['max_count']} zdarzeń" for ep in eps[-8:])
+    ok = tg_send("✅ <b>Monitor uruchomiony.</b> Od teraz dostaniesz powiadomienie o każdym nowym zdarzeniu "
+                 f"i o alarmie {cfg['min_events']} w {cfg['window_days']} dni.\n\n" + status_text(dash)
+                 + (f"\n\nHistoryczne epizody (ostatnie):\n{hist}" if eps else "") + "\n\n/pomoc – lista komend")
+    if ok and tg_token() and tg_chat():
+        state["welcome_sent"] = True
 
 
 if __name__ == "__main__":
