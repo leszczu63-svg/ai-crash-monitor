@@ -2,7 +2,7 @@
 
 Monitoruje 6 sygnałów krachu AI. Wysyła powiadomienia na Telegram o każdym nowym zdarzeniu i alarm,
 gdy **≥3 różne zdarzenia zmieszczą się w jednym oknie 90 dni**. Działa za darmo:
-GitHub Actions (harmonogram) + GitHub Pages (dashboard) + bot Telegram.
+GitHub Actions (harmonogram) + GitHub Pages (dashboard) + powiadomienia push **ntfy.sh** (i/lub bot Telegram).
 
 | Zdarzenie | Źródło | Warunek |
 |---|---|---|
@@ -16,27 +16,30 @@ GitHub Actions (harmonogram) + GitHub Pages (dashboard) + bot Telegram.
 ATH liczone z cen zamknięcia skorygowanych o splity (bez korekty o dywidendy).
 Dodatkowo: wczesne ostrzeżenia przy 80% progu (np. NVDA −40%) i alert, gdy źródło danych nie działa 2× z rzędu.
 
-## Uruchomienie (ok. 10 minut)
+## Uruchomienie – powiadomienia ntfy (zalecane, bez konta)
 
-1. **Bot Telegram:** w Telegramie napisz do `@BotFather` → `/newbot` → zapisz token.
-   Potem napisz cokolwiek do swojego nowego bota.
-2. **Chat ID:** lokalnie
-   `pip install -r requirements.txt && TELEGRAM_BOT_TOKEN=xxx python monitor.py chatid`
-3. **Repozytorium:** utwórz **publiczne** repo na GitHubie i wypchnij ten katalog
-   (publiczne = darmowe Pages i bez limitu minut Actions; w repo nie ma żadnych sekretów).
-4. **Sekrety:** Settings → Secrets and variables → Actions → `TELEGRAM_BOT_TOKEN` i `TELEGRAM_CHAT_ID`.
-5. **Pages:** Settings → Pages → Source: *Deploy from a branch* → `main` / `/docs`.
-6. **Start:** Actions → „Ocena dzienna” → *Run workflow*. Dostaniesz wiadomość powitalną ze statusem.
+1. Zainstaluj aplikację **ntfy** na telefonie (Google Play / App Store).
+2. Wymyśl długą, trudną do zgadnięcia nazwę tematu, np. `ai-krach-7f3k9q2xm81z` – kto ją zna, może czytać powiadomienia.
+3. W aplikacji: **+** → *Subscribe to topic* → wpisz tę nazwę (serwer domyślny `ntfy.sh`).
+4. GitHub → Settings → Secrets and variables → Actions → **Repository secrets** → `NTFY_TOPIC` = ta nazwa.
+5. Actions → „Test Telegrama” (testuje wszystkie kanały) → *Run workflow* → powinno przyjść powiadomienie.
+6. Actions → „Ocena dzienna” → *Run workflow* → przyjdzie powitanie ze statusem.
 
-Dashboard: `https://<login>.github.io/<repo>/`
+Pages: Settings → Pages → *Deploy from a branch* → `main` / `/docs`. Dashboard: `https://<login>.github.io/<repo>/`
+
+### Opcjonalnie: Telegram
+Sekrety `TELEGRAM_BOT_TOKEN` (od `@BotFather`) i `TELEGRAM_CHAT_ID` (od `@userinfobot`).
+Jeśli Telegram zwraca 429 „Too Many Requests” – usuń oba sekrety, inaczej przebiegi będą czerwone.
+
+### Komendy
+- Telegram: wyślij komendę botowi (odpowiedź do ~1 h).
+- Bez Telegrama: Actions → **„Komenda”** → *Run workflow* → wpisz np. `status`, `kandydaci`,
+  `potwierdz ID`, `odrzuc ID`, `dodaj bankrupt 2027-01-15`, `usun acquired 2027-01-15`, `h100 0.95`.
+  Działa też z aplikacji GitHub na telefonie. Odpowiedź przychodzi przez ntfy.
 
 ## Harmonogram
 - `daily.yml` – pn–pt 22:30 UTC (po zamknięciu sesji w USA) + codziennie 12:00 UTC (H100).
 - `commands.yml` – co godzinę: komendy z Telegrama i skan newsów.
-
-## Komendy w Telegramie
-`/status`, `/kandydaci`, `/potwierdz ID [data]`, `/odrzuc ID`, `/dodaj bankrupt|acquired RRRR-MM-DD`,
-`/usun …`, `/h100 CENA [data]`, `/test`, `/pomoc`. Bot odpowiada przy najbliższym przebiegu (do ~1 h).
 
 ## Konfiguracja (`config.json`)
 - `window_days` / `min_events` – okno 90 dni, 3 zdarzenia.

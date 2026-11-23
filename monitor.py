@@ -126,15 +126,61 @@ def tg_api(method: str, **params):
     return r.json().get("result")
 
 
-def tg_send(text: str) -> bool:
+def telegram_send(text: str) -> bool:
     chat = tg_chat()
     if len(text) > 4000:
         text = text[:3990] + "\n…"
-    if not tg_token() or not chat:
-        print("──── [Telegram wyłączony – wiadomość] ────\n" + text + "\n──────────────")
-        return True
     return tg_api("sendMessage", chat_id=chat, text=text, parse_mode="HTML",
                   disable_web_page_preview="true") is not None
+
+
+def ntfy_topic() -> str:
+    return os.environ.get("NTFY_TOPIC", "").strip().strip('"\'').strip()
+
+
+def ntfy_send(text: str) -> bool:
+    """Push przez ntfy.sh (darmowe, bez konta). Priorytet wg znacznika na początku wiadomości."""
+    plain = re.sub(r"</?b>", "**", text)
+    plain = html.unescape(re.sub(r"<[^>]+>", "", plain))
+    first, _, rest = plain.partition("\n")
+    head = first.lstrip("* ")
+    prio = 5 if head.startswith("🚨") else 4 if head.startswith("🔴") else 3
+    payload = {"topic": ntfy_topic(), "title": first.replace("**", "")[:200], "message": rest.strip() or first,
+               "priority": prio, "markdown": True}
+    server = os.environ.get("NTFY_SERVER", "https://ntfy.sh").strip().rstrip("/")
+    for attempt in range(3):
+        try:
+            r = requests.post(server, json=payload, timeout=30)
+            if r.ok:
+                return True
+            print(f"[ntfy] błąd {r.status_code}: {r.text[:200]}")
+            NTFY_ERRORS.append(str(r.status_code))
+            return False
+        except requests.RequestException as e:
+            print(f"[ntfy] błąd sieci: {e}")
+            time.sleep(5)
+    NTFY_ERRORS.append("network")
+    return False
+
+
+NTFY_ERRORS: list[str] = []
+
+
+def tg_send(text: str) -> bool:
+    """Wysyła powiadomienie do wszystkich skonfigurowanych kanałów (Telegram, ntfy).
+    True, jeśli dotarło przynajmniej jednym kanałem (lub żaden nie jest skonfigurowany – wtedy wypisuje)."""
+    if len(text) > 4000:
+        text = text[:3990] + "\n…"
+    channels = []
+    if tg_token() and tg_chat():
+        channels.append(telegram_send)
+    if ntfy_topic():
+        channels.append(ntfy_send)
+    if not channels:
+        print("──── [brak kanału powiadomień – wiadomość] ────\n" + text + "\n──────────────")
+        return True
+    results = [ch(text) for ch in channels]
+    return any(results)
 
 
 # ───────────────────────── pobieranie danych ─────────────────────────
@@ -498,7 +544,8 @@ HELP = (
     "/usun bankrupt|acquired RRRR-MM-DD – usuń zdarzenie ręczne\n"
     "/h100 CENA [RRRR-MM-DD] – ręczny odczyt H100 (gdy źródło nie działa)\n"
     "/test – testowe powiadomienie\n\n"
-    f"({MANUAL_HINT}). Bot sprawdza komendy co ok. godzinę."
+    f"({MANUAL_HINT}).\nTelegram: bot sprawdza komendy co ok. godzinę. "
+    "Bez Telegrama: GitHub → Actions → „Komenda” → Run workflow, wpisz np. status albo potwierdz ID."
 )
 
 
@@ -511,81 +558,90 @@ def add_manual(state, eid, date, note):
 
 def process_commands(cfg: dict, state: dict) -> bool:
     """Obsługuje komendy z Telegrama. Zwraca True, jeśli trzeba przeliczyć zdarzenia."""
+    if not tg_token():
+        return False
     chat = tg_chat()
     updates = tg_api("getUpdates", offset=state["tg_offset"], timeout=0) or []
-    manual_ids = {e["id"] for e in cfg["events"] if e["type"] == "manual"}
     need_eval = False
     for u in updates:
         state["tg_offset"] = u["update_id"] + 1
         msg = u.get("message") or {}
         if str(msg.get("chat", {}).get("id")) != chat:
             continue
-        parts = (msg.get("text") or "").strip().split()
-        if not parts:
-            continue
-        cmd, args = parts[0].split("@")[0].lower(), parts[1:]
-        try:
-            if cmd in ("/start", "/pomoc", "/help"):
-                tg_send(HELP)
-            elif cmd == "/status":
-                if DASH_PATH.exists():
-                    tg_send(status_text(json.loads(DASH_PATH.read_text(encoding="utf-8"))))
-                else:
-                    tg_send("Brak danych – pierwsza pełna ocena jeszcze się nie odbyła.")
-            elif cmd == "/kandydaci":
-                pend = [c for c in state["candidates"].values() if c["status"] == "pending"]
-                if not pend:
-                    tg_send("Brak kandydatów do potwierdzenia.")
-                for c in sorted(pend, key=lambda c: c["date"])[-10:]:
-                    tg_send(candidate_text(c))
-            elif cmd in ("/potwierdz", "/potwierdź"):
-                c = state["candidates"].get(args[0].lower())
-                if not c:
-                    tg_send(f"Nie znam kandydata {esc(args[0])}.")
-                    continue
-                date = args[1] if len(args) > 1 else c["date"]
-                d(date)
-                c["status"] = "confirmed"
-                add_manual(state, c["event"], date, c["title"])
-                need_eval = True
-                tg_send(f"🔴 <b>Potwierdzono zdarzenie: {esc(label_of(cfg, c['event']))}</b> ({date}).")
-            elif cmd in ("/odrzuc", "/odrzuć"):
-                c = state["candidates"].get(args[0].lower())
-                if c:
-                    c["status"] = "rejected"
-                    tg_send(f"Odrzucono {c['id']}.")
-                else:
-                    tg_send(f"Nie znam kandydata {esc(args[0])}.")
-            elif cmd == "/dodaj":
-                eid, date = args[0].lower(), args[1]
-                if eid not in manual_ids:
-                    tg_send(f"Nieznane zdarzenie. Dostępne: {', '.join(sorted(manual_ids))} ({MANUAL_HINT}).")
-                    continue
-                d(date)
-                add_manual(state, eid, date, " ".join(args[2:]) or "dodane ręcznie")
-                need_eval = True
-                tg_send(f"🔴 <b>Dodano zdarzenie: {esc(label_of(cfg, eid))}</b> ({date}).")
-            elif cmd in ("/usun", "/usuń"):
-                eid, date = args[0].lower(), args[1]
-                before = len(state["manual_events"].get(eid, []))
-                state["manual_events"][eid] = [m for m in state["manual_events"].get(eid, []) if m["date"] != date]
-                need_eval = True
-                tg_send("Usunięto." if len(state["manual_events"][eid]) < before else "Nie znaleziono takiego wpisu.")
-            elif cmd == "/h100":
-                price = float(args[0].replace(",", "."))
-                date = args[1] if len(args) > 1 else today_ny().isoformat()
-                d(date)
-                series = load_h100()
-                series[date] = price
-                save_h100(series)
-                need_eval = True
-                tg_send(f"Zapisano H100 = {money(price)} USD/h ({date}).")
-            elif cmd == "/test":
-                tg_send("✅ Test: powiadomienia działają.")
+        need_eval |= handle_command(cfg, state, msg.get("text"))
+    return need_eval
+
+
+def handle_command(cfg: dict, state: dict, text: str | None) -> bool:
+    """Wykonuje jedną komendę (z Telegrama albo z workflowu „Komenda”). True = trzeba przeliczyć."""
+    manual_ids = {e["id"] for e in cfg["events"] if e["type"] == "manual"}
+    need_eval = False
+    parts = (text or "").strip().split()
+    if not parts:
+        return need_eval
+    cmd, args = parts[0].split("@")[0].lower(), parts[1:]
+    try:
+        if cmd in ("/start", "/pomoc", "/help"):
+            tg_send(HELP)
+        elif cmd == "/status":
+            if DASH_PATH.exists():
+                tg_send(status_text(json.loads(DASH_PATH.read_text(encoding="utf-8"))))
             else:
-                tg_send("Nieznana komenda. /pomoc")
-        except (IndexError, ValueError):
-            tg_send("Błędne argumenty. /pomoc")
+                tg_send("Brak danych – pierwsza pełna ocena jeszcze się nie odbyła.")
+        elif cmd == "/kandydaci":
+            pend = [c for c in state["candidates"].values() if c["status"] == "pending"]
+            if not pend:
+                tg_send("Brak kandydatów do potwierdzenia.")
+            for c in sorted(pend, key=lambda c: c["date"])[-10:]:
+                tg_send(candidate_text(c))
+        elif cmd in ("/potwierdz", "/potwierdź"):
+            c = state["candidates"].get(args[0].lower())
+            if not c:
+                tg_send(f"Nie znam kandydata {esc(args[0])}.")
+                return need_eval
+            date = args[1] if len(args) > 1 else c["date"]
+            d(date)
+            c["status"] = "confirmed"
+            add_manual(state, c["event"], date, c["title"])
+            need_eval = True
+            tg_send(f"🔴 <b>Potwierdzono zdarzenie: {esc(label_of(cfg, c['event']))}</b> ({date}).")
+        elif cmd in ("/odrzuc", "/odrzuć"):
+            c = state["candidates"].get(args[0].lower())
+            if c:
+                c["status"] = "rejected"
+                tg_send(f"Odrzucono {c['id']}.")
+            else:
+                tg_send(f"Nie znam kandydata {esc(args[0])}.")
+        elif cmd == "/dodaj":
+            eid, date = args[0].lower(), args[1]
+            if eid not in manual_ids:
+                tg_send(f"Nieznane zdarzenie. Dostępne: {', '.join(sorted(manual_ids))} ({MANUAL_HINT}).")
+                return need_eval
+            d(date)
+            add_manual(state, eid, date, " ".join(args[2:]) or "dodane ręcznie")
+            need_eval = True
+            tg_send(f"🔴 <b>Dodano zdarzenie: {esc(label_of(cfg, eid))}</b> ({date}).")
+        elif cmd in ("/usun", "/usuń"):
+            eid, date = args[0].lower(), args[1]
+            before = len(state["manual_events"].get(eid, []))
+            state["manual_events"][eid] = [m for m in state["manual_events"].get(eid, []) if m["date"] != date]
+            need_eval = True
+            tg_send("Usunięto." if len(state["manual_events"][eid]) < before else "Nie znaleziono takiego wpisu.")
+        elif cmd == "/h100":
+            price = float(args[0].replace(",", "."))
+            date = args[1] if len(args) > 1 else today_ny().isoformat()
+            d(date)
+            series = load_h100()
+            series[date] = price
+            save_h100(series)
+            need_eval = True
+            tg_send(f"Zapisano H100 = {money(price)} USD/h ({date}).")
+        elif cmd == "/test":
+            tg_send("✅ Test: powiadomienia działają.")
+        else:
+            tg_send("Nieznana komenda. /pomoc")
+    except (IndexError, ValueError):
+        tg_send("Błędne argumenty. /pomoc")
     return need_eval
 
 
@@ -658,7 +714,13 @@ def main() -> None:
             print(f"chat_id={chat.get('id')}  ({chat.get('first_name', '')} {chat.get('username', '')})")
         return
     if mode == "test":
+        print(f"ntfy: {'temat ustawiony (długość ' + str(len(ntfy_topic())) + ')' if ntfy_topic() else 'nieustawiony'}")
         tok, chat = tg_token(), tg_chat()
+        if not tok:
+            print("Telegram: nieustawiony")
+            ok = tg_send("✅ Test: powiadomienia działają.")
+            print("OK" if ok else "BŁĄD")
+            sys.exit(0 if ok and not NTFY_ERRORS else 1)
         print(f"Token: {'ustawiony' if tok else 'BRAK'}, format {'OK' if re.fullmatch(r'[0-9]{6,}:[A-Za-z0-9_-]{30,}', tok) else 'NIEPOPRAWNY (oczekiwano 123456789:ABC...)'}")
         print(f"Chat ID: {'ustawiony' if chat else 'BRAK'}, format {'OK' if re.fullmatch(r'-?[0-9]{5,}', chat) else 'NIEPOPRAWNY (oczekiwano samej liczby)'}")
         me = tg_api("getMe")
@@ -669,6 +731,13 @@ def main() -> None:
         ok = tg_send("✅ Test: powiadomienia działają.")
         print("OK" if ok else "BŁĄD")
         sys.exit(0 if ok else 1)
+    if mode == "cmd":  # komenda z workflowu GitHub „Komenda” (np. z aplikacji GitHub na telefonie)
+        text = " ".join(sys.argv[2:]).strip()
+        need_eval = handle_command(cfg, state, text if text.startswith("/") else "/" + text)
+        if need_eval:
+            run_full(cfg, state)
+        save_state(state)
+        sys.exit(1 if NTFY_ERRORS or TG_ERRORS else 0)
     need_eval = process_commands(cfg, state)
     run_news(cfg, state)
     if mode == "daily" or need_eval or not state["initialized"]:
@@ -676,10 +745,14 @@ def main() -> None:
     if not state.get("welcome_sent") and DASH_PATH.exists():
         send_welcome(cfg, state)
     save_state(state)
+    if NTFY_ERRORS:
+        print("\n❌ ntfy odrzucił wiadomość – sprawdź sekret NTFY_TOPIC.")
     if TG_ERRORS:
         print("\n❌ Telegram odrzucił zapytania. 404 = zły format tokenu (sprawdź sekret TELEGRAM_BOT_TOKEN, "
               "czy nie zamieniono go z TELEGRAM_CHAT_ID), 401 = token unieważniony, "
-              "400 chat not found = zły TELEGRAM_CHAT_ID albo nie napisałeś nic do bota.")
+              "400 chat not found = zły TELEGRAM_CHAT_ID albo nie napisałeś nic do bota. "
+              "429 = Telegram blokuje bota – użyj ntfy i usuń sekrety TELEGRAM_*.")
+    if TG_ERRORS or NTFY_ERRORS:
         sys.exit(1)
 
 
@@ -690,7 +763,7 @@ def send_welcome(cfg: dict, state: dict) -> None:
     ok = tg_send("✅ <b>Monitor uruchomiony.</b> Od teraz dostaniesz powiadomienie o każdym nowym zdarzeniu "
                  f"i o alarmie {cfg['min_events']} w {cfg['window_days']} dni.\n\n" + status_text(dash)
                  + (f"\n\nHistoryczne epizody (ostatnie):\n{hist}" if eps else "") + "\n\n/pomoc – lista komend")
-    if ok and tg_token() and tg_chat():
+    if ok and ((tg_token() and tg_chat()) or ntfy_topic()):
         state["welcome_sent"] = True
 
 
