@@ -1,0 +1,88 @@
+{
+  "window_days": 90,
+  "min_events": 3,
+  "deadline": null,
+  "count_mode": "crossing",
+  "rearm_margin": 0.05,
+  "early_warning_ratio": 0.8,
+  "notify_max_age_days": 7,
+  "dashboard_history_days": 1095,
+  "events": [
+    {
+      "id": "nvda",
+      "short": "NVDA",
+      "label": "NVDA ≥50% poniżej ATH",
+      "type": "drawdown",
+      "tickers": [
+        "NVDA"
+      ],
+      "threshold": 0.5
+    },
+    {
+      "id": "soxx",
+      "short": "SOXX",
+      "label": "SOXX ≥40% poniżej ATH",
+      "type": "drawdown",
+      "tickers": [
+        "SOXX"
+      ],
+      "threshold": 0.4
+    },
+    {
+      "id": "bankrupt",
+      "short": "Bankructwo",
+      "label": "Bankructwo OpenAI lub Anthropic",
+      "type": "manual"
+    },
+    {
+      "id": "acquired",
+      "short": "Przejęcie OpenAI",
+      "label": "Przejęcie OpenAI",
+      "type": "manual"
+    },
+    {
+      "id": "h100",
+      "short": "H100 ≤ 1 USD",
+      "label": "H100 ≤ 1,00 USD/h przez 5 kolejnych dni",
+      "type": "h100",
+      "max_price": 1.0,
+      "days": 5,
+      "warning_price": 1.5
+    },
+    {
+      "id": "hardware",
+      "short": "Sprzęt AI",
+      "label": "TSM/ASML/AVGO/ANET/SMCI ≥50% poniżej ATH",
+      "type": "drawdown",
+      "tickers": [
+        "TSM",
+        "ASML",
+        "AVGO",
+        "ANET",
+        "SMCI"
+      ],
+      "threshold": 0.5
+    }
+  ],
+  "h100_source": {
+    "url": "https://www.silicondata.com/products/silicon-index/h100",
+    "series_key": "h100-neo"
+  },
+  "news": [
+    {
+      "event": "bankrupt",
+      "query": "OpenAI bankruptcy",
+      "pattern": "\\b(OpenAI|Anthropic)\\b.*\\b(files? for bankruptcy|filed for bankruptcy|filing for bankruptcy|chapter 11|chapter 7|declares? bankruptcy|bankruptcy (filing|protection|petition)|insolven)"
+    },
+    {
+      "event": "bankrupt",
+      "query": "Anthropic bankruptcy",
+      "pattern": "\\b(OpenAI|Anthropic)\\b.*\\b(files? for bankruptcy|filed for bankruptcy|filing for bankruptcy|chapter 11|chapter 7|declares? bankruptcy|bankruptcy (filing|protection|petition)|insolven)"
+    },
+    {
+      "event": "acquired",
+      "query": "OpenAI acquired",
+      "pattern": "(\\b(acquires?|acquiring|acquisition of|to buy|buys|takeover of|merger with|deal for) OpenAI\\b|\\bOpenAI\\b[^.]{0,30}\\b(acquired by|to be acquired|agrees to be acquired|agrees to sell itself|sold to)\\b)"
+    }
+  ]
+}

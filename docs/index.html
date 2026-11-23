@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Crash Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#14171c;--muted:#5d6673;--line:#e2e5ea;--red:#d33a2c;--redbg:#fdecea;--amber:#b7791f;--green:#2f855a;--accent:#2b6cb0;--grid:rgba(0,0,0,.07)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1216;--card:#171b21;--fg:#e7eaee;--muted:#98a2ae;--line:#2a3038;--red:#f0675a;--redbg:#3a1d1b;--amber:#e0a84a;--green:#5fc28d;--accent:#6aa8f0;--grid:rgba(255,255,255,.08)}}
+:root[data-theme="dark"]{--bg:#0f1216;--card:#171b21;--fg:#e7eaee;--muted:#98a2ae;--line:#2a3038;--red:#f0675a;--redbg:#3a1d1b;--amber:#e0a84a;--green:#5fc28d;--accent:#6aa8f0;--grid:rgba(255,255,255,.08)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:22px;margin:0}
+h2{font-size:16px;margin:28px 0 10px}
+.muted{color:var(--muted);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+.hero{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between;margin-top:14px}
+.big{font-size:40px;font-weight:700;line-height:1}
+.alarm{background:var(--redbg);border-color:var(--red)}
+.alarm .big{color:var(--red)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.ev .st{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.ev.on{border-color:var(--red)} .ev.on .st{color:var(--red)} .ev.off .st{color:var(--muted)}
+.ev .lbl{font-weight:600;margin:4px 0}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:7px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--muted);font-weight:500;font-size:12px}
+.tw{overflow-x:auto}
+.bar{height:6px;background:var(--line);border-radius:3px;min-width:70px;position:relative}
+.bar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--accent)}
+.bar i.hot{background:var(--amber)} .bar i.over{background:var(--red)}
+.chart{position:relative;height:280px}
+.tabs{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+.tabs button{border:1px solid var(--line);background:var(--card);color:var(--fg);padding:5px 10px;border-radius:6px;cursor:pointer;font:inherit;font-size:13px}
+.tabs button.act{border-color:var(--accent);color:var(--accent)}
+.tl-row{display:grid;grid-template-columns:150px 1fr;gap:8px;align-items:center;padding:5px 0;font-size:13px}
+.tl-track{position:relative;height:16px;background:var(--line);border-radius:4px;overflow:hidden}
+.tl-win{position:absolute;top:0;bottom:0;background:var(--accent);opacity:.18}
+.tl-dot{position:absolute;top:3px;width:10px;height:10px;margin-left:-5px;border-radius:50%;background:var(--red)}
+.tl-axis{display:grid;grid-template-columns:150px 1fr;gap:8px;font-size:11px;color:var(--muted)}
+.tl-axis div:last-child{display:flex;justify-content:space-between}
+.cand{margin-bottom:8px} .cand code{background:var(--line);padding:1px 5px;border-radius:4px}
+a{color:var(--accent)}
+@media (max-width:560px){.tl-row,.tl-axis{grid-template-columns:96px 1fr}.big{font-size:32px}}
+</style>
+</head>
+<body>
+<main>
+  <h1>AI Crash Monitor</h1>
+  <div class="muted" id="meta">Ładowanie…</div>
+
+  <div class="card hero" id="hero"></div>
+
+  <h2>Zdarzenia</h2>
+  <div class="grid" id="events"></div>
+
+  <h2>Oś czasu – ostatnie 365 dni</h2>
+  <div class="card" id="timeline"></div>
+
+  <h2>Spółki i ETF – odległość od progu</h2>
+  <div class="card tw"><table id="tickers"></table></div>
+
+  <h2>Spadek od ATH (%)</h2>
+  <div class="card">
+    <div class="tabs" id="ddtabs"></div>
+    <div class="chart"><canvas id="ddchart"></canvas></div>
+  </div>
+
+  <h2>Wynajem H100 (SDH100RT, USD/GPU-h)</h2>
+  <div class="card"><div class="chart"><canvas id="h100chart"></canvas></div>
+    <div class="muted" id="h100meta"></div></div>
+
+  <h2>Newsy do potwierdzenia</h2>
+  <div class="card" id="cands"></div>
+
+  <h2>Historyczne epizody „3 w 90 dni”</h2>
+  <div class="card" id="episodes"></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const pct = x => (x*100).toFixed(1).replace('.',',') + '%';
+const num = x => x.toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2});
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const addDays = (s,n) => { const d = new Date(s+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); };
+const PALETTE = ['#2b6cb0','#c05621','#2f855a','#805ad5','#b83280'];
+
+fetch('data.json?'+Date.now()).then(r => r.json()).then(render).catch(e => { $('meta').textContent = 'Nie udało się wczytać data.json: ' + e; });
+
+function render(D){
+  const c = D.combo, cfg = D.config;
+  $('meta').textContent = `Stan na ${D.asof} · wygenerowano ${D.generated_at.replace('T',' ')} UTC · tryb liczenia: ${cfg.count_mode === 'crossing' ? 'moment przekroczenia progu' : 'każdy dzień poniżej progu'}`;
+  const hero = $('hero');
+  if (c.triggered_now) hero.classList.add('alarm');
+  hero.innerHTML = `<div><div class="muted">Zdarzenia w oknie ${cfg.window_days} dni</div>
+      <div class="big">${c.active_count} / ${cfg.min_events}</div></div>
+    <div class="muted">Okno: ${c.window_start} → ${c.window_end}${cfg.deadline ? `<br>Data graniczna: ${cfg.deadline}` : ''}<br>
+      ${c.triggered_now ? '<b style="color:var(--red)">ALARM AKTYWNY</b>' : 'Alarm nieaktywny'}</div>`;
+
+  $('events').innerHTML = D.events.map(e => `<div class="card ev ${e.in_window ? 'on' : 'off'}">
+      <div class="st">${e.in_window ? 'W oknie' : 'Brak w oknie'}</div>
+      <div class="lbl">${esc(e.label)}</div>
+      <div class="muted">${e.last_occurrence ? 'Ostatnio: ' + e.last_occurrence : 'Nie wystąpiło'}${e.in_window ? '<br>Liczy się do: ' + e.window_expires : ''}
+      ${e.details.length ? '<br>' + e.details.map(esc).join('<br>') : ''}</div></div>`).join('');
+
+  // oś czasu
+  const end = D.asof, start = addDays(end, -364), span = 364;
+  const pos = s => (Math.round((new Date(s) - new Date(start)) / 864e5) / span) * 100;
+  const winL = pos(c.window_start);
+  $('timeline').innerHTML = D.events.map(e => {
+    const dots = e.occurrences_recent.filter(x => x >= start).map(x => `<span class="tl-dot" style="left:${pos(x)}%" title="${x}"></span>`).join('');
+    return `<div class="tl-row"><div>${esc(e.short)}</div>
+      <div class="tl-track"><span class="tl-win" style="left:${winL}%;right:0"></span>${dots}</div></div>`;
+  }).join('') + `<div class="tl-axis"><div></div><div><span>${start}</span><span>okno ${cfg.window_days} dni</span><span>${end}</span></div></div>`;
+
+  // tabela
+  $('tickers').innerHTML = `<tr><th>Ticker</th><th>Zamknięcie</th><th>ATH</th><th>Data ATH</th><th>Spadek</th><th>Próg</th><th>Postęp do progu</th></tr>` +
+    D.tickers.map(t => { const p = Math.min(t.drawdown / t.threshold, 1);
+      const cls = t.below ? 'over' : (p >= cfg.early_warning_ratio ? 'hot' : '');
+      return `<tr><td><b>${t.ticker}</b></td><td>${num(t.last_close)}</td><td>${num(t.ath)}</td><td>${t.ath_date}</td>
+        <td style="color:${t.below ? 'var(--red)' : 'inherit'}">−${pct(t.drawdown)}</td><td>−${pct(t.threshold)}</td>
+        <td><div class="bar"><i class="${cls}" style="width:${p*100}%"></i></div></td></tr>`; }).join('');
+
+  // wykres drawdown
+  const groups = {};
+  D.tickers.forEach(t => (groups[t.event] = groups[t.event] || []).push(t));
+  const names = Object.fromEntries(D.events.map(e => [e.id, e.short]));
+  let ddChart;
+  const draw = (ev, days) => {
+    const ts = groups[ev], thr = -ts[0].threshold * 100;
+    const from = addDays(D.asof, -days);
+    const base = D.series[ts[0].ticker].dates.filter(x => x >= from);
+    const datasets = ts.map((t, i) => { const s = D.series[t.ticker]; const m = new Map(s.dates.map((x, j) => [x, s.dd[j]]));
+      return {label: t.ticker, data: base.map(x => m.get(x) ?? null), borderColor: PALETTE[i], borderWidth: 1.6, pointRadius: 0, spanGaps: true}; });
+    datasets.push({label: `Próg ${thr}%`, data: base.map(() => thr), borderColor: css('--red'), borderDash: [6,4], borderWidth: 1.5, pointRadius: 0});
+    ddChart && ddChart.destroy();
+    ddChart = new Chart($('ddchart'), {type: 'line', data: {labels: base, datasets}, options: opts('%')});
+  };
+  let curEv = 'nvda', curDays = 365;
+  const tabs = $('ddtabs');
+  const mk = () => { tabs.innerHTML = Object.keys(groups).map(g => `<button data-ev="${g}" class="${g === curEv ? 'act' : ''}">${names[g] || g}</button>`).join('') +
+      [[365,'1 rok'],[1095,'3 lata']].map(([d,l]) => `<button data-days="${d}" class="${d === curDays ? 'act' : ''}">${l}</button>`).join(''); };
+  tabs.onclick = e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.ev) curEv = b.dataset.ev; if (b.dataset.days) curDays = +b.dataset.days; mk(); draw(curEv, curDays); };
+  mk(); draw(curEv, curDays);
+
+  // H100
+  const h = D.h100;
+  new Chart($('h100chart'), {type: 'line', data: {labels: h.dates, datasets: [
+    {label: 'H100 USD/h', data: h.prices, borderColor: PALETTE[0], borderWidth: 1.8, pointRadius: 0},
+    {label: 'Próg 1,00', data: h.dates.map(() => 1), borderColor: css('--red'), borderDash: [6,4], borderWidth: 1.5, pointRadius: 0}]},
+    options: opts(' $', 0)});
+  $('h100meta').textContent = h.last_price != null ? `Ostatni odczyt: ${num(h.last_price)} USD/h (${h.last_date}). Dni z rzędu ≤ 1,00: ${h.streak}. Historia zbierana od uruchomienia monitora.` : 'Brak danych.';
+
+  // kandydaci
+  $('cands').innerHTML = D.candidates.length ? D.candidates.map(x => `<div class="cand"><b>[${x.event}]</b> ${x.date} – <a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(x.title)}</a><br>
+     <span class="muted">W Telegramie: <code>/potwierdz ${x.id}</code> lub <code>/odrzuc ${x.id}</code></span></div>`).join('') : '<span class="muted">Brak.</span>';
+
+  $('episodes').innerHTML = c.episodes.length ? '<table><tr><th>Od</th><th>Do</th><th>Maks. zdarzeń</th><th>Zdarzenia</th></tr>' +
+    c.episodes.slice().reverse().map(e => `<tr><td>${e.start}</td><td>${e.end}</td><td>${e.max_count}</td><td style="text-align:left;white-space:normal">${e.events.join(', ')}</td></tr>`).join('') + '</table>'
+    : '<span class="muted">Brak.</span>';
+}
+
+function opts(unit, min){
+  const g = css('--grid'), m = css('--muted');
+  return {responsive: true, maintainAspectRatio: false, animation: false, interaction: {mode: 'index', intersect: false},
+    plugins: {legend: {labels: {color: m, boxWidth: 12}}, tooltip: {callbacks: {label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(2)}${unit}`}}},
+    scales: {x: {ticks: {color: m, maxTicksLimit: 6, maxRotation: 0}, grid: {color: g}},
+             y: {ticks: {color: m}, grid: {color: g}, ...(min !== undefined ? {min} : {})}}};
+}
+</script>
+</body>
+</html>
