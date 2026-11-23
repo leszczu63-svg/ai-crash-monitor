@@ -6,7 +6,7 @@
   "news": 0,
   "prices": 0
  },
- "initialized": true,
+ "initialized": false,
  "manual_events": {},
  "notified": [
   "combo:2022-09-26:3",
