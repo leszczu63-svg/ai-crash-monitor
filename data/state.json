@@ -162,5 +162,6 @@
   "warn:TSM:2023-04-25",
   "warn:TSM:2023-09-26"
  ],
- "tg_offset": 0
+ "tg_offset": 0,
+ "welcome_sent": true
 }
