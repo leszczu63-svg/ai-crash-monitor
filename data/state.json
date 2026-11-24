@@ -3,7 +3,7 @@
  "failure_alerted": [],
  "failures": {
   "h100": 0,
-  "news": 0,
+  "news": 1,
   "prices": 0
  },
  "initialized": true,
