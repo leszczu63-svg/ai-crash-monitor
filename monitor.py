@@ -730,14 +730,14 @@ def main() -> None:
         print(f"Ostatnie wiadomości do bota z {len(chats)} czatów; zgodny z TELEGRAM_CHAT_ID: {'tak' if chat in chats else 'nie / brak wiadomości'}")
         ok = tg_send("✅ Test: powiadomienia działają.")
         print("OK" if ok else "BŁĄD")
-        sys.exit(0 if ok else 1)
+        sys.exit(exit_code() if ok else 1)
     if mode == "cmd":  # komenda z workflowu GitHub „Komenda” (np. z aplikacji GitHub na telefonie)
         text = " ".join(sys.argv[2:]).strip()
         need_eval = handle_command(cfg, state, text if text.startswith("/") else "/" + text)
         if need_eval:
             run_full(cfg, state)
         save_state(state)
-        sys.exit(1 if NTFY_ERRORS or TG_ERRORS else 0)
+        sys.exit(exit_code())
     need_eval = process_commands(cfg, state)
     run_news(cfg, state)
     if mode == "daily" or need_eval or not state["initialized"]:
@@ -752,8 +752,21 @@ def main() -> None:
               "czy nie zamieniono go z TELEGRAM_CHAT_ID), 401 = token unieważniony, "
               "400 chat not found = zły TELEGRAM_CHAT_ID albo nie napisałeś nic do bota. "
               "429 = Telegram blokuje bota – użyj ntfy i usuń sekrety TELEGRAM_*.")
-    if TG_ERRORS or NTFY_ERRORS:
-        sys.exit(1)
+    sys.exit(exit_code())
+
+
+def exit_code() -> int:
+    """Błąd (czerwony przebieg) tylko wtedy, gdy powiadomienia nie mają którędy dotrzeć.
+    Niedziałający Telegram przy działającym ntfy to tylko ostrzeżenie."""
+    if NTFY_ERRORS:
+        return 1
+    if TG_ERRORS:
+        if ntfy_topic():
+            print("::warning::Telegram nie działa (powiadomienia idą przez ntfy). "
+                  "Usuń sekrety TELEGRAM_BOT_TOKEN i TELEGRAM_CHAT_ID, jeśli z niego nie korzystasz.")
+            return 0
+        return 1
+    return 0
 
 
 def send_welcome(cfg: dict, state: dict) -> None:
